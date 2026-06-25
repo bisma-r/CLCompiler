@@ -1,0 +1,337 @@
+/* ============================================================
+   CL.jjt  –  CL Language compiler front-end
+   JavaCC / JJTree grammar
+   Covers: lexer, parser, AST node generation
+   ============================================================ */
+
+options {
+    MULTI          = true;
+    VISITOR        = true;
+    NODE_DEFAULT_VOID = true;
+    STATIC         = false;
+}
+
+PARSER_BEGIN(CLParser)
+package project;
+
+import java.io.*;
+
+public class CLParser {
+
+    public static void main(String[] args) throws Exception {
+        Reader input;
+        if (args.length > 0) {
+            input = new FileReader(args[0]);
+        } else {
+            System.out.println("CL Compiler — reading from stdin (type program, then EOF):");
+            input = new InputStreamReader(System.in);
+        }
+
+        CLParser parser = new CLParser(input);
+        try {
+            SimpleNode root = parser.Program();
+
+            System.out.println("\n====== SYMBOL TABLE ======");
+            SymbolTable symTable = new SymbolTable();
+            SemanticAnalyzer semAnalyzer = new SemanticAnalyzer(symTable);
+            semAnalyzer.analyze(root);
+            symTable.print();
+
+            System.out.println("\n====== INTERMEDIATE CODE (Quadruples) ======");
+            IRGenerator irGen = new IRGenerator(symTable);
+            irGen.generate(root);
+            irGen.printQuadruples();
+
+            System.out.println("\n====== OPTIMIZED IR ======");
+            Optimizer optimizer = new Optimizer(irGen.getQuadruples());
+            optimizer.optimize();
+            optimizer.printQuadruples();
+
+            System.out.println("\n====== TARGET ASSEMBLY CODE ======");
+            CodeGenerator codeGen = new CodeGenerator(optimizer.getQuadruples());
+            codeGen.generate();
+            codeGen.printAssembly();
+
+        } catch (ParseException e) {
+            System.err.println("Syntax Error: " + e.getMessage());
+        } catch (SemanticException e) {
+            System.err.println("Semantic Error: " + e.getMessage());
+        }
+    }
+}
+
+PARSER_END(CLParser)
+
+/* ============================================================
+   SKIP TOKENS
+   ============================================================ */
+SKIP : {
+    " " | "\t" | "\r" | "\n"
+    | <COMMENT: "//" (~["\n"])* "\n">
+}
+
+/* ============================================================
+   KEYWORDS
+   ============================================================ */
+TOKEN : {
+    <STARTPROGRAM : "startProgram">
+  | <ENDPROGRAM   : "endProgram">
+  | <VARIABLES    : "variables:">
+  | <CODE         : "code:">
+  | <INT          : "int">
+  | <FLOAT        : "float">
+  | <STRING_TYPE  : "string">
+  | <CHAR_TYPE    : "char">
+  | <LOOPIF       : "loopif">
+  | <HOLDS        : "holds">
+  | <ENDLOOP      : "endloop">
+  | <SWITCHFOR    : "switchFor">
+  | <CASE         : "case">
+  | <OTHER        : "other">
+  | <ENDSWITCHFOR : "endswitchFor">
+  | <OUTSTRING    : "outString">
+}
+
+/* ============================================================
+   OPERATORS & PUNCTUATION
+   ============================================================ */
+TOKEN : {
+    <ASSIGN  : "=">
+  | <PLUS    : "+">
+  | <MINUS   : "-">
+  | <TIMES   : "*">
+  | <DIVIDE  : "/">
+  | <SEMI    : ";">
+  | <COLON   : ":">
+  | <LPAREN  : "(">
+  | <RPAREN  : ")">
+  | <LE      : "<=">
+  | <GE      : ">=">
+  | <EQ      : "==">
+  | <NEQ     : "<>">
+  | <LT      : "<">
+  | <GT      : ">">
+}
+
+/* ============================================================
+   LITERALS & IDENTIFIERS
+   ============================================================ */
+TOKEN : {
+    <INTEGER_LIT : (["0"-"9"])+>
+  | <FLOAT_LIT   : (["0"-"9"])+ "." (["0"-"9"])+>
+  | <CHAR_LIT    : "'" (~["'", "\\"]) "'">
+  | <STRING_LIT  : "\"" (~["\"", "\\"] | "\\" ~[])* "\"">
+  | <IDENTIFIER  : ["a"-"z","A"-"Z","_"] (["a"-"z","A"-"Z","0"-"9","_"])*>
+}
+
+/* ============================================================
+   GRAMMAR RULES
+   ============================================================ */
+
+/** Root production */
+
+SimpleNode Program() #Program :
+{} {
+    <STARTPROGRAM>
+    VarBlock()
+    CodeBlock()
+    <ENDPROGRAM>
+    <EOF>
+    { return jjtThis; }
+}
+
+void VarBlock() #VarBlock :
+{} {
+    <VARIABLES>
+    (VarDecl())*
+}
+
+void VarDecl() #VarDecl :
+{ Token t, id; } {
+    t = TypeToken()
+    id = <IDENTIFIER>
+    { jjtThis.jjtSetValue(t.image + " " + id.image); }
+    [ <ASSIGN> Literal() ]
+    <SEMI>
+}
+
+Token TypeToken() #void :
+{ Token t; } {
+    ( t = <INT> | t = <FLOAT> | t = <STRING_TYPE> | t = <CHAR_TYPE> )
+    { return t; }
+}
+
+void CodeBlock() #CodeBlock :
+{} {
+    <CODE>
+    (Statement())*
+}
+
+void Statement() #void :
+{} {
+    ( AssignStatement()
+    | LoopStatement()
+    | SwitchStatement()
+    | OutStringStatement()
+    )
+}
+
+void AssignStatement() #AssignStmt :
+{ Token id; } {
+    id = <IDENTIFIER>
+    { jjtThis.jjtSetValue(id.image); }
+    <ASSIGN>
+    Expression()
+    <SEMI>
+}
+
+void LoopStatement() #LoopStmt :
+{} {
+    <LOOPIF>
+    CondExpression()
+    <HOLDS>
+    (AssignStatement())*
+    <ENDLOOP>
+}
+
+void SwitchStatement() #SwitchStmt :
+{ Token id; } {
+    <SWITCHFOR>
+    <LPAREN>
+    id = <IDENTIFIER>
+    { jjtThis.jjtSetValue(id.image); }
+    <RPAREN>
+    (CaseClause())+
+    OtherClause()
+    <ENDSWITCHFOR>
+}
+
+void CaseClause() #CaseClause :
+{} {
+    <CASE>
+    Literal()
+    <COLON>
+    AssignStatement()
+}
+
+void OtherClause() #OtherClause :
+{} {
+    <OTHER>
+    <COLON>
+    AssignStatement()
+}
+
+void OutStringStatement() #OutStringStmt :
+{} {
+    <OUTSTRING>
+    <LPAREN>
+    Expression()
+    <RPAREN>
+    <SEMI>
+}
+
+void CondExpression() #CondExpr :
+{ Token op; } {
+    Expression()
+    op = CondOp()
+    { jjtThis.jjtSetValue(op.image); }
+    Expression()
+}
+
+Token CondOp() #void :
+{ Token t; } {
+    ( t=<LE> | t=<GE> | t=<EQ> | t=<NEQ> | t=<LT> | t=<GT> )
+    { return t; }
+}
+
+/* Expression with precedence: + and - */
+void Expression() #void :
+{} {
+    Term() ExprRest()
+}
+
+void ExprRest() #void :
+{ Token op; } {
+    ( op=<PLUS>  Term() { SimpleNode right = (SimpleNode) jjtree.popNode();
+                          SimpleNode left  = (SimpleNode) jjtree.popNode();
+                          ASTBinaryOp n = new ASTBinaryOp(JJTBINARYOP);
+                          n.jjtSetValue(op.image);
+                          n.jjtAddChild(left,  0); left.jjtSetParent(n);
+                          n.jjtAddChild(right, 1); right.jjtSetParent(n);
+                          jjtree.pushNode(n); }
+    | op=<MINUS> Term() { SimpleNode right = (SimpleNode) jjtree.popNode();
+                          SimpleNode left  = (SimpleNode) jjtree.popNode();
+                          ASTBinaryOp n = new ASTBinaryOp(JJTBINARYOP);
+                          n.jjtSetValue(op.image);
+                          n.jjtAddChild(left,  0); left.jjtSetParent(n);
+                          n.jjtAddChild(right, 1); right.jjtSetParent(n);
+                          jjtree.pushNode(n); }
+    )*
+}
+
+/* Term: * and / */
+void Term() #void :
+{} {
+    Factor() TermRest()
+}
+
+void TermRest() #void :
+{ Token op; } {
+    ( op=<TIMES>  Factor() { SimpleNode right = (SimpleNode) jjtree.popNode();
+                              SimpleNode left  = (SimpleNode) jjtree.popNode();
+                              ASTBinaryOp n = new ASTBinaryOp(JJTBINARYOP);
+                              n.jjtSetValue(op.image);
+                              n.jjtAddChild(left,  0); left.jjtSetParent(n);
+                              n.jjtAddChild(right, 1); right.jjtSetParent(n);
+                              jjtree.pushNode(n); }
+    | op=<DIVIDE> Factor() { SimpleNode right = (SimpleNode) jjtree.popNode();
+                              SimpleNode left  = (SimpleNode) jjtree.popNode();
+                              ASTBinaryOp n = new ASTBinaryOp(JJTBINARYOP);
+                              n.jjtSetValue(op.image);
+                              n.jjtAddChild(left,  0); left.jjtSetParent(n);
+                              n.jjtAddChild(right, 1); right.jjtSetParent(n);
+                              jjtree.pushNode(n); }
+    )*
+}
+
+void Factor() #void :
+{ Token t; } {
+      t=<IDENTIFIER>  { ASTIdentNode n = new ASTIdentNode(JJTIDENTNODE);
+                        n.jjtSetValue(t.image); jjtree.pushNode(n); }
+    | Literal()
+    | <LPAREN> Expression() <RPAREN>
+    | <MINUS> Factor()      { SimpleNode operand = (SimpleNode) jjtree.popNode();
+                               ASTUnaryOp n = new ASTUnaryOp(JJTUNARYOP);
+                               n.jjtSetValue("minus");
+                               n.jjtAddChild(operand, 0); operand.jjtSetParent(n);
+                               jjtree.pushNode(n); }
+}
+
+void Literal() #Literal :
+{ Token t; } {
+    ( t=<INTEGER_LIT> | t=<FLOAT_LIT> | t=<STRING_LIT> | t=<CHAR_LIT> )
+    { jjtThis.jjtSetValue(t.image); }
+}
+
+/* ============================================================
+   Extra AST node IDs (referenced in Factor inline nodes)
+   ============================================================ */
+void IdentNode() #IdentNode :
+{ Token t; } {
+    t=<IDENTIFIER>
+    { jjtThis.jjtSetValue(t.image); }
+}
+
+void BinaryOp() #BinaryOp :
+{ Token op; } {
+    op=<PLUS>
+    { jjtThis.jjtSetValue(op.image); }
+}
+
+void UnaryOp() #UnaryOp :
+{}
+{
+  {} 
+}
+
+
