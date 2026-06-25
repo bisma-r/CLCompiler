@@ -1,5 +1,5 @@
 # CL Compiler — Compiler Construction Spring 2026
-### Milestones 1 & 2 | Dr. Sabina Akhtar
+### Milestones 1 & 2 
 
 A complete compiler for the **CL (Classroom Language)** written in Java using **JavaCC / JJTree**.
 
@@ -188,15 +188,3 @@ MUL  R3, R2, R1
 ```
 
 ---
-
-## Submission
-
-Zip your project as instructed:  
-`S5<section>G<group_number>`  
-e.g., `S5AG12.zip`
-
-Include: `src/`, `samples/`, `lib/`, `build_jar.sh`, and this `README.md`.
-
----
-
-*Good Luck!*
